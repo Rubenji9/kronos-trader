@@ -73,6 +73,11 @@ def _rsi(c: pd.Series, n: int) -> float:
     return float(100 - 100 / (1 + rs))
 
 
+# Pesos del comité. Kronos bajó de 0,45 a 0,30 tras la evaluación (no acierta la dirección
+# mejor que "siempre sube"; solo parece ordenar valores). Se pueden cambiar en config.yaml.
+KRONOS_WEIGHTS = {"Kronos": 0.30, "Técnico": 0.40, "Contrarian": 0.10, "Riesgo": 0.20}
+
+
 def _stance(s: float) -> str:
     return "bull" if s > 0.15 else "bear" if s < -0.15 else "neutral"
 
@@ -82,13 +87,18 @@ def rules_committee(ticker: str, f: dict, fc: Forecast, current_weight: float, m
     st = fc.stats
     votes: list[Vote] = []
 
-    # 1) Analista Kronos: probabilidad de subida y rendimiento esperado ajustado por dispersión
-    edge = (st["p_up"] - 0.5) * 2
-    sharpe_like = st["exp_return"] / (st["dispersion"] + 1e-6)
+    # 1) Analista Kronos. Si hay señal relativa (vs. media del universo) usa esa: la evaluación
+    #    mostró sesgo común en la dirección pero algo de capacidad para ordenar valores.
+    rel = "exp_return_rel" in st
+    p_up = st.get("p_up_rel", st["p_up"])
+    er = st.get("exp_return_rel", st["exp_return"])
+    edge = (p_up - 0.5) * 2
+    sharpe_like = er / (st["dispersion"] + 1e-6)
     s1 = float(np.clip(0.6 * edge + 0.4 * np.tanh(sharpe_like * 2), -1, 1))
     votes.append(Vote("Kronos", _stance(s1), s1,
-                      f"{st['n_up']}/{st['samples']} escenarios al alza · E[r]={st['exp_return']:+.2%} "
-                      f"· rango p10–p90 {st['p10']:.2f}–{st['p90']:.2f}"))
+                      f"{st['n_up']}/{st['samples']} escenarios al alza · E[r]={st['exp_return']:+.2%}"
+                      + (f" · vs universo {er:+.2%}" if rel else "")
+                      + f" · rango p10–p90 {st['p10']:.2f}–{st['p90']:.2f}"))
 
     # 2) Analista técnico: tendencia (SMA) + momentum
     trend = (1 if f["close"] > f["sma50"] else -1) * 0.5 + (1 if f["sma50"] > f["sma200"] else -1) * 0.5
@@ -107,7 +117,7 @@ def rules_committee(ticker: str, f: dict, fc: Forecast, current_weight: float, m
     votes.append(Vote("Riesgo", _stance(s4), s4,
                       f"vol anual {f['vol_20d_ann']:.0%} · drawdown {f['drawdown_from_high']:.0%}"))
 
-    w = {"Kronos": 0.45, "Técnico": 0.30, "Contrarian": 0.10, "Riesgo": 0.15}
+    w = KRONOS_WEIGHTS
     score = sum(v.score * w[v.agent] for v in votes)
     agreement = 1 - np.std([v.score for v in votes]) / 1.0
     confidence = float(np.clip(0.5 + abs(score) * 0.6 + 0.15 * (agreement - 0.5), 0, 1))
@@ -131,6 +141,9 @@ Modelo Kronos ({engine}) — {samples} escenarios simulados a {horizon} sesiones
 - rendimiento esperado: {exp_return:+.2%} · mediana {median_return:+.2%}
 - percentiles del cierre final: p10 {p10:.2f} · p50 {p50:.2f} · p90 {p90:.2f}  (último {last:.2f})
 - dispersión entre escenarios: {dispersion:.2%}
+- rendimiento esperado RELATIVO a la media del universo hoy: {rel}
+  (Kronos tiene un sesgo común y acierta poco la dirección absoluta; en pruebas solo ha mostrado
+  algo de capacidad para ordenar unos valores frente a otros. Dale más peso a esta línea.)
 
 Peso actual en cartera: {current:.0%}. Peso máximo permitido: {max_w:.0%}.
 
@@ -152,7 +165,8 @@ def claude_committee(ticker: str, f: dict, fc: Forecast, current_weight: float, 
         features=json.dumps({k: round(v, 4) for k, v in f.items()}, ensure_ascii=False),
         n_up=st["n_up"], p_up=st["p_up"], exp_return=st["exp_return"], median_return=st["median_return"],
         p10=st["p10"], p50=st["p50"], p90=st["p90"], last=fc.last_close, dispersion=st["dispersion"],
-        current=current_weight, max_w=max_w)
+        current=current_weight, max_w=max_w,
+        rel=f"{st['exp_return_rel']:+.2%}" if "exp_return_rel" in st else "n/d")
     msg = client.messages.create(model=model, max_tokens=900, messages=[{"role": "user", "content": prompt}])
     text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
     data = json.loads(re.search(r"\{.*\}", text, re.S).group(0))
@@ -194,6 +208,8 @@ def tradingagents_committee(ticker: str, f: dict, fc: Forecast, current_weight: 
 def decide(mode: str, ticker: str, df: pd.DataFrame, fc: Forecast, current_weight: float,
            max_w: float, dcfg: dict, date: str) -> tuple[Signal, dict]:
     f = features(df)
+    if dcfg.get("weights"):
+        KRONOS_WEIGHTS.update(dcfg["weights"])
     try:
         if mode == "claude" and os.environ.get("ANTHROPIC_API_KEY"):
             return claude_committee(ticker, f, fc, current_weight, max_w, dcfg.get("claude_model")), f

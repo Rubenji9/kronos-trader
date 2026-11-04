@@ -49,19 +49,36 @@ def cycle(cfg, engine, broker, risk, frames: dict, upto: int | None, demo: bool,
 
     per = {}
     signals = {}
-    for i, t in enumerate(universe):
+    # 1) previsiones de todo el universo
+    fcs, secs = {}, {}
+    for t in universe:
         df = view[t].tail(cfg["data"]["lookback"])
         t0 = time.time()
-        fc = run_forecast(engine, t, df, cfg["forecast"], seed=zlib.crc32(f"{t}{date}".encode()))
+        fcs[t] = run_forecast(engine, t, df, cfg["forecast"], seed=zlib.crc32(f"{t}{date}".encode()))
+        secs[t] = time.time() - t0
+    # 2) señal relativa: Kronos tiene un sesgo común (p. ej. bajista cuando todo está en máximos).
+    #    La evaluación mostró que acierta poco la dirección pero ordena algo mejor los valores,
+    #    así que restamos la media del universo y nos quedamos con el ranking.
+    if cfg["forecast"].get("relative", True) and len(fcs) > 1:
+        m_er = sum(f.stats["exp_return"] for f in fcs.values()) / len(fcs)
+        m_pu = sum(f.stats["p_up"] for f in fcs.values()) / len(fcs)
+        for f in fcs.values():
+            f.stats["exp_return_rel"] = round(f.stats["exp_return"] - m_er, 5)
+            f.stats["p_up_rel"] = round(min(max(f.stats["p_up"] - m_pu + 0.5, 0.0), 1.0), 4)
+    # 3) comité
+    for t in universe:
+        df = view[t].tail(cfg["data"]["lookback"])
+        fc = fcs[t]
         cur_w = (broker.positions.get(t, {}).get("qty", 0) * prices[t] / equity) if equity else 0.0
         sig, feats = decide(cfg["decision"]["mode"], t, df, fc, cur_w,
                             cfg["risk"]["max_position_pct"], cfg["decision"], date)
         signals[t] = sig
+        rel = f" · rel {fc.stats['exp_return_rel']:+.2%}" if "exp_return_rel" in fc.stats else ""
         emit(log, f"[{date}] {t:<5} {fc.engine} {fc.stats['n_up']:>2}/{fc.stats['samples']} ↑ "
-                   f"E[r] {fc.stats['exp_return']:+.2%} → {sig.action} {sig.target_weight:.0%} "
-                   f"conf {sig.confidence:.0%}"
-             + (f" · desfase {fc.stats['recon_gap']:+.1%}" if fc.stats.get("recon_gap") is not None else "")
-             + f" ({time.time() - t0:.1f}s)")
+                  f"E[r] {fc.stats['exp_return']:+.2%}{rel} → {sig.action} {sig.target_weight:.0%} "
+                  f"conf {sig.confidence:.0%}"
+                  + (f" · desfase {fc.stats['recon_gap']:+.1%}" if fc.stats.get("recon_gap") is not None else "")
+                  + f" ({secs[t]:.1f}s)")
         per[t] = {"forecast": fc, "signal": sig, "features": feats}
 
     orders, rlog = risk.build_orders(signals, broker.positions, broker.cash, prices, broker.last_equity()
