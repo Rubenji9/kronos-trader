@@ -77,6 +77,9 @@ class KronosEngine:
         kronos_path = os.environ.get("KRONOS_PATH", os.path.join(os.path.dirname(__file__), "..", "vendor", "Kronos"))
         sys.path.insert(0, os.path.abspath(kronos_path))
         from model import Kronos, KronosPredictor, KronosTokenizer  # type: ignore
+        import torch
+
+        torch.set_num_threads(os.cpu_count() or 1)   # usa todos los núcleos de la máquina
 
         tok = KronosTokenizer.from_pretrained(tokenizer_id)
         mdl = Kronos.from_pretrained(model_id)

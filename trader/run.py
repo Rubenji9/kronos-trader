@@ -32,6 +32,12 @@ def load_cfg(path: str) -> dict:
         return yaml.safe_load(fh)
 
 
+def emit(log: list[str], line: str):
+    """Guarda la línea para el panel y la imprime al momento (progreso visible en GitHub Actions)."""
+    log.append(line)
+    print(line, flush=True)
+
+
 def cycle(cfg, engine, broker, risk, frames: dict, upto: int | None, demo: bool, log: list[str]) -> dict:
     """Un ciclo de decisión usando solo velas hasta `upto` (None = todas)."""
     universe = cfg["universe"]
@@ -51,7 +57,7 @@ def cycle(cfg, engine, broker, risk, frames: dict, upto: int | None, demo: bool,
         sig, feats = decide(cfg["decision"]["mode"], t, df, fc, cur_w,
                             cfg["risk"]["max_position_pct"], cfg["decision"], date)
         signals[t] = sig
-        log.append(f"[{date}] {t:<5} {fc.engine} {fc.stats['n_up']:>2}/{fc.stats['samples']} ↑ "
+        emit(log, f"[{date}] {t:<5} {fc.engine} {fc.stats['n_up']:>2}/{fc.stats['samples']} ↑ "
                    f"E[r] {fc.stats['exp_return']:+.2%} → {sig.action} {sig.target_weight:.0%} "
                    f"conf {sig.confidence:.0%} ({time.time() - t0:.1f}s)")
         per[t] = {"forecast": fc, "signal": sig, "features": feats}
@@ -59,10 +65,10 @@ def cycle(cfg, engine, broker, risk, frames: dict, upto: int | None, demo: bool,
     orders, rlog = risk.build_orders(signals, broker.positions, broker.cash, prices, broker.last_equity()
                                      if hasattr(broker, "last_equity") else None)
     for line in rlog:
-        log.append(f"[{date}] RISK  {line}")
+        emit(log, f"[{date}] RISK  {line}")
     fills = broker.execute(orders, run_id)
     for f in fills:
-        log.append(f"[{date}] FILL  {f['side']} {f['qty']:g} {f['ticker']} @ {f['price']} · {f['reason']}")
+        emit(log, f"[{date}] FILL  {f['side']} {f['qty']:g} {f['ticker']} @ {f['price']} · {f['reason']}")
     if hasattr(broker, "mark"):
         broker.mark(prices, prices[cfg["benchmark"]], date)
     return {"date": date, "run_id": run_id, "per": per, "orders": orders, "fills": fills,
@@ -148,8 +154,15 @@ def main():
     log: list[str] = []
     steps = range(len(common) - a.replay + 1, len(common) + 1) if a.replay else [None]
     res = None
-    for upto in steps:
+    total = len(steps)
+    t_start = time.time()
+    for k, upto in enumerate(steps, 1):
         res = cycle(cfg, engine, broker, risk, frames, upto, a.demo, log)
+        if total > 1:
+            el = time.time() - t_start
+            print(f"── día {k}/{total} · {el / 60:.1f} min · faltan ~{el / k * (total - k) / 60:.1f} min", flush=True)
+        if hasattr(broker, "save") and k % 10 == 0:
+            broker.save()          # guardado intermedio por si GitHub corta la ejecución
 
     if hasattr(broker, "save"):
         broker.save()
@@ -162,7 +175,6 @@ def main():
             fh.write(json.dumps({"date": state["as_of"], "ticker": t, "signal": d["signal"],
                                  "stats": {k: v for k, v in d["forecast"]["stats"].items() if k != "mean_path"}},
                                 ensure_ascii=False) + "\n")
-    print("\n".join(log[-len(universe) - 8:]))
     print(f"\nPatrimonio: {state['portfolio']['equity']:,.2f} USD · estado → {out_state}")
 
 

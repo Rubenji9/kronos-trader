@@ -20,7 +20,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 150         # la primera ejecución con replay=60 puede tardar; el límite gratuito es 6 h
     steps:
       - uses: actions/checkout@v4
 
@@ -48,6 +48,7 @@ jobs:
 
       - name: Ciclo de trading (paper)
         env:
+          PYTHONUNBUFFERED: "1"
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}   # solo si decision.mode = claude
         run: python -m trader.run --replay "${{ github.event.inputs.replay || 0 }}"
 
