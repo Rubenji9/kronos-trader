@@ -73,24 +73,16 @@ def summarize(paths: np.ndarray, last_close: float) -> dict:
 class KronosEngine:
     name = "kronos"
 
-    anchor = True
-    last_recon_gap = None
-
-    def __init__(self, model_id: str, tokenizer_id: str, max_context: int = 512, device: str | None = None,
-                 anchor: bool = True):
+    def __init__(self, model_id: str, tokenizer_id: str, max_context: int = 512, device: str | None = None):
         kronos_path = os.environ.get("KRONOS_PATH", os.path.join(os.path.dirname(__file__), "..", "vendor", "Kronos"))
         sys.path.insert(0, os.path.abspath(kronos_path))
         from model import Kronos, KronosPredictor, KronosTokenizer  # type: ignore
-        import torch
-
-        torch.set_num_threads(os.cpu_count() or 1)   # usa todos los núcleos de la máquina
 
         tok = KronosTokenizer.from_pretrained(tokenizer_id)
         mdl = Kronos.from_pretrained(model_id)
         tok.eval(); mdl.eval()
         self.predictor = KronosPredictor(mdl, tok, device=device, max_context=max_context)
         self.name = f"kronos:{model_id.split('/')[-1]}"
-        self.anchor = anchor
 
     @classmethod
     def from_modules(cls, predictor, name="kronos:custom"):
@@ -101,7 +93,6 @@ class KronosEngine:
 
     def paths(self, df: pd.DataFrame, horizon: int, samples: int, T: float, top_p: float, seed: int = 0) -> np.ndarray:
         import torch
-        from model.kronos import auto_regressive_inference  # type: ignore
 
         torch.manual_seed(seed)
         p = self.predictor
@@ -113,26 +104,13 @@ class KronosEngine:
         mean, std = x.mean(axis=0), x.std(axis=0)
         xn = np.clip((x - mean) / (std + 1e-5), -p.clip, p.clip)
 
-        dev = p.device
-        xb = torch.from_numpy(np.repeat(xn[None], samples, axis=0)).to(dev)
-        xsb = torch.from_numpy(np.repeat(x_stamp[None], samples, axis=0)).to(dev)
-        ysb = torch.from_numpy(np.repeat(y_stamp[None], samples, axis=0)).to(dev)
-        # sample_count=1 por fila → cada fila del batch es un escenario independiente.
-        # Devuelve contexto reconstruido + futuro: (samples, L, 6) en escala normalizada.
-        full = auto_regressive_inference(p.tokenizer, p.model, xb, xsb, ysb, p.max_context, horizon,
-                                         p.clip, T, 0, top_p, 1, False)
-        full = full * (std + 1e-5) + mean
-        ci = FEATS.index("close")
-        paths = full[:, -horizon:, ci]
-        recon_last = full[:, -horizon - 1, ci]          # cómo "ve" Kronos el último cierre real
-        last = float(df["close"].iloc[-1])
-        self.last_recon_gap = float(np.median(recon_last) / last - 1)
-        if self.anchor:
-            # El tokenizador cuantiza los precios: su versión del último cierre puede salir
-            # desplazada y arrastrar todos los caminos. Anclamos cada camino al cierre real
-            # para quedarnos solo con el movimiento que predice, no con el error de reconstrucción.
-            paths = paths * (last / np.where(np.abs(recon_last) > 1e-9, recon_last, last))[:, None]
-        return paths
+        xb = np.repeat(xn[None], samples, axis=0)
+        xsb = np.repeat(x_stamp[None], samples, axis=0)
+        ysb = np.repeat(y_stamp[None], samples, axis=0)
+        # sample_count=1 por fila → cada fila del batch es un escenario independiente
+        preds = p.generate(xb, xsb, ysb, horizon, T, 0, top_p, 1, False)   # (samples, horizon, 6)
+        preds = preds * (std + 1e-5) + mean
+        return preds[:, :, FEATS.index("close")]
 
 
 # ───────────────────── Fallback demo ─────────────────────
@@ -152,7 +130,7 @@ def load_engine(cfg: dict, demo: bool = False):
     if demo:
         return BootstrapEngine()
     try:
-        return KronosEngine(cfg["model"], cfg["tokenizer"], anchor=bool(cfg.get("anchor", True)))
+        return KronosEngine(cfg["model"], cfg["tokenizer"])
     except Exception as e:  # noqa: BLE001
         print(f"[forecast] Kronos no disponible ({e!r}); uso bootstrap-demo")
         return BootstrapEngine()
@@ -163,7 +141,4 @@ def run_forecast(engine, ticker: str, df: pd.DataFrame, cfg: dict, seed: int = 0
     paths = engine.paths(df, horizon, samples, float(cfg.get("temperature", 1.0)), float(cfg.get("top_p", 0.9)), seed)
     last = float(df["close"].iloc[-1])
     dates = [d.strftime("%Y-%m-%d") for d in _future_dates(df.index[-1], horizon)]
-    stats = summarize(paths, last)
-    gap = getattr(engine, "last_recon_gap", None)
-    stats["recon_gap"] = None if gap is None else round(gap, 5)
-    return Forecast(ticker, engine.name, last, dates, paths, stats)
+    return Forecast(ticker, engine.name, last, dates, paths, summarize(paths, last))

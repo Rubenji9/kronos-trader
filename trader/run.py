@@ -32,12 +32,6 @@ def load_cfg(path: str) -> dict:
         return yaml.safe_load(fh)
 
 
-def emit(log: list[str], line: str):
-    """Guarda la línea para el panel y la imprime al momento (progreso visible en GitHub Actions)."""
-    log.append(line)
-    print(line, flush=True)
-
-
 def cycle(cfg, engine, broker, risk, frames: dict, upto: int | None, demo: bool, log: list[str]) -> dict:
     """Un ciclo de decisión usando solo velas hasta `upto` (None = todas)."""
     universe = cfg["universe"]
@@ -49,45 +43,26 @@ def cycle(cfg, engine, broker, risk, frames: dict, upto: int | None, demo: bool,
 
     per = {}
     signals = {}
-    # 1) previsiones de todo el universo
-    fcs, secs = {}, {}
-    for t in universe:
+    for i, t in enumerate(universe):
         df = view[t].tail(cfg["data"]["lookback"])
         t0 = time.time()
-        fcs[t] = run_forecast(engine, t, df, cfg["forecast"], seed=zlib.crc32(f"{t}{date}".encode()))
-        secs[t] = time.time() - t0
-    # 2) señal relativa: Kronos tiene un sesgo común (p. ej. bajista cuando todo está en máximos).
-    #    La evaluación mostró que acierta poco la dirección pero ordena algo mejor los valores,
-    #    así que restamos la media del universo y nos quedamos con el ranking.
-    if cfg["forecast"].get("relative", True) and len(fcs) > 1:
-        m_er = sum(f.stats["exp_return"] for f in fcs.values()) / len(fcs)
-        m_pu = sum(f.stats["p_up"] for f in fcs.values()) / len(fcs)
-        for f in fcs.values():
-            f.stats["exp_return_rel"] = round(f.stats["exp_return"] - m_er, 5)
-            f.stats["p_up_rel"] = round(min(max(f.stats["p_up"] - m_pu + 0.5, 0.0), 1.0), 4)
-    # 3) comité
-    for t in universe:
-        df = view[t].tail(cfg["data"]["lookback"])
-        fc = fcs[t]
+        fc = run_forecast(engine, t, df, cfg["forecast"], seed=zlib.crc32(f"{t}{date}".encode()))
         cur_w = (broker.positions.get(t, {}).get("qty", 0) * prices[t] / equity) if equity else 0.0
         sig, feats = decide(cfg["decision"]["mode"], t, df, fc, cur_w,
                             cfg["risk"]["max_position_pct"], cfg["decision"], date)
         signals[t] = sig
-        rel = f" · rel {fc.stats['exp_return_rel']:+.2%}" if "exp_return_rel" in fc.stats else ""
-        emit(log, f"[{date}] {t:<5} {fc.engine} {fc.stats['n_up']:>2}/{fc.stats['samples']} ↑ "
-                  f"E[r] {fc.stats['exp_return']:+.2%}{rel} → {sig.action} {sig.target_weight:.0%} "
-                  f"conf {sig.confidence:.0%}"
-                  + (f" · desfase {fc.stats['recon_gap']:+.1%}" if fc.stats.get("recon_gap") is not None else "")
-                  + f" ({secs[t]:.1f}s)")
+        log.append(f"[{date}] {t:<5} {fc.engine} {fc.stats['n_up']:>2}/{fc.stats['samples']} ↑ "
+                   f"E[r] {fc.stats['exp_return']:+.2%} → {sig.action} {sig.target_weight:.0%} "
+                   f"conf {sig.confidence:.0%} ({time.time() - t0:.1f}s)")
         per[t] = {"forecast": fc, "signal": sig, "features": feats}
 
     orders, rlog = risk.build_orders(signals, broker.positions, broker.cash, prices, broker.last_equity()
                                      if hasattr(broker, "last_equity") else None)
     for line in rlog:
-        emit(log, f"[{date}] RISK  {line}")
+        log.append(f"[{date}] RISK  {line}")
     fills = broker.execute(orders, run_id)
     for f in fills:
-        emit(log, f"[{date}] FILL  {f['side']} {f['qty']:g} {f['ticker']} @ {f['price']} · {f['reason']}")
+        log.append(f"[{date}] FILL  {f['side']} {f['qty']:g} {f['ticker']} @ {f['price']} · {f['reason']}")
     if hasattr(broker, "mark"):
         broker.mark(prices, prices[cfg["benchmark"]], date)
     return {"date": date, "run_id": run_id, "per": per, "orders": orders, "fills": fills,
@@ -173,15 +148,8 @@ def main():
     log: list[str] = []
     steps = range(len(common) - a.replay + 1, len(common) + 1) if a.replay else [None]
     res = None
-    total = len(steps)
-    t_start = time.time()
-    for k, upto in enumerate(steps, 1):
+    for upto in steps:
         res = cycle(cfg, engine, broker, risk, frames, upto, a.demo, log)
-        if total > 1:
-            el = time.time() - t_start
-            print(f"── día {k}/{total} · {el / 60:.1f} min · faltan ~{el / k * (total - k) / 60:.1f} min", flush=True)
-        if hasattr(broker, "save") and k % 10 == 0:
-            broker.save()          # guardado intermedio por si GitHub corta la ejecución
 
     if hasattr(broker, "save"):
         broker.save()
@@ -194,6 +162,7 @@ def main():
             fh.write(json.dumps({"date": state["as_of"], "ticker": t, "signal": d["signal"],
                                  "stats": {k: v for k, v in d["forecast"]["stats"].items() if k != "mean_path"}},
                                 ensure_ascii=False) + "\n")
+    print("\n".join(log[-len(universe) - 8:]))
     print(f"\nPatrimonio: {state['portfolio']['equity']:,.2f} USD · estado → {out_state}")
 
 

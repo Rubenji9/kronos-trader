@@ -1,0 +1,13 @@
+# torch se instala aparte (versión CPU):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+numpy
+pandas
+pyyaml
+yfinance>=0.2.40
+einops
+safetensors
+huggingface_hub
+tqdm
+anthropic          # solo para decision.mode = claude
+# tradingagents    # opcional: pip install git+https://github.com/TauricResearch/TradingAgents
+# ib_async         # fase 2: Interactive Brokers

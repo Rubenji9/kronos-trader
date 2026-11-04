@@ -8,7 +8,7 @@ benchmark: SPY                            # contra qué se compara la cartera
 
 data:
   interval: 1d          # velas diarias (con LLMs de por medio no tiene sentido intradía)
-  lookback: 128         # velas que ve Kronos. Evaluación 04-11: 256 → sesgo −6,7 %; 128 → −1,3 % y mejor IC
+  lookback: 400         # velas de contexto que ve Kronos (máx. 512 en Kronos-small)
 
 forecast:
   model: NeoQuasar/Kronos-small
@@ -17,8 +17,6 @@ forecast:
   samples: 32           # nº de escenarios (las líneas del abanico)
   temperature: 1.0
   top_p: 0.9
-  anchor: true          # ancla los escenarios al cierre real (corrige el desfase del tokenizador)
-  relative: true        # usa Kronos como señal relativa (resta la media del universo cada día)
 
 decision:
   # rules         → comité determinista, gratis, sin LLM
@@ -26,11 +24,6 @@ decision:
   # tradingagents → framework completo TauricResearch/TradingAgents (muchas llamadas, más caro)
   mode: rules
   claude_model: claude-sonnet-5-5
-  weights:              # peso de cada analista en el modo rules (deben sumar 1)
-    Kronos: 0.30
-    Técnico: 0.40
-    Contrarian: 0.10
-    Riesgo: 0.20
   tradingagents:
     llm_provider: anthropic
     deep_think_llm: claude-sonnet-5-5

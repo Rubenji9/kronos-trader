@@ -1,0 +1,45 @@
+name: revalorizar
+
+# Cada 30 min con NYSE abierta (13:30–21:00 UTC cubre horario de invierno y de verano).
+# NO opera: solo actualiza el valor de la cartera para el panel. Tarda ~1 min y no necesita torch.
+on:
+  schedule:
+    - cron: "5,35 13-20 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: trader               # espera si está corriendo el ciclo diario o la evaluación
+  cancel-in-progress: false
+
+jobs:
+  mark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Dependencias (ligeras)
+        run: pip install numpy pandas pyyaml "yfinance>=0.2.40"
+
+      - name: Revalorizar cartera
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: python -m trader.mark ${{ github.event_name == 'workflow_dispatch' && '--force' || '' }}
+
+      - name: Guardar
+        run: |
+          git config user.name  "kronos-bot"
+          git config user.email "kronos-bot@users.noreply.github.com"
+          git add docs/data
+          git diff --cached --quiet && exit 0
+          git commit -m "revalorización $(date -u +%FT%H:%M)"
+          git pull --rebase
+          git push
