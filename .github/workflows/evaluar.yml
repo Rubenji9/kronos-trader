@@ -1,0 +1,66 @@
+name: evaluar-kronos
+
+# Prueba honesta: ¿acierta Kronos sobre historia real? Solo se lanza a mano.
+on:
+  workflow_dispatch:
+    inputs:
+      lookbacks:
+        description: "Longitudes de contexto a comparar"
+        default: "64,128,256"
+      dates:
+        description: "Fechas pasadas por ticker"
+        default: "20"
+      step:
+        description: "Sesiones entre fechas"
+        default: "3"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: trader               # no se pisa con el ciclo diario
+  cancel-in-progress: false
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Kronos (código)
+        run: git clone --depth 1 https://github.com/shiyu-coder/Kronos.git vendor/Kronos
+
+      - name: Caché de pesos Hugging Face
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-kronos-small-v1
+
+      - name: Dependencias
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+
+      - name: Evaluación
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: >
+          python tools/evaluate_kronos.py
+          --lookbacks "${{ github.event.inputs.lookbacks }}"
+          --dates "${{ github.event.inputs.dates }}"
+          --step "${{ github.event.inputs.step }}"
+
+      - name: Guardar resultado
+        run: |
+          git config user.name  "kronos-bot"
+          git config user.email "kronos-bot@users.noreply.github.com"
+          git add docs/data/eval.json
+          git diff --cached --quiet || git commit -m "evaluación Kronos $(date -u +%F)"
+          git pull --rebase
+          git push

@@ -29,7 +29,18 @@ def fetch_yahoo(ticker: str, lookback: int, interval: str = "1d") -> pd.DataFram
     df["amount"] = df["volume"] * df[["open", "high", "low", "close"]].mean(axis=1)
     df.index = pd.to_datetime(df.index).tz_localize(None)
     df.index.name = "timestamps"
-    return df.tail(lookback)
+    return drop_unfinished(df).tail(lookback)
+
+
+def drop_unfinished(df: pd.DataFrame, now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Si la bolsa de Nueva York aún no ha cerrado, Yahoo devuelve la vela de hoy a medias
+    (volumen bajo, precio provisional). La quitamos para no decidir con datos incompletos."""
+    now = now if now is not None else pd.Timestamp.now(tz="America/New_York")
+    today = pd.Timestamp(now.date())
+    closed = (now.hour, now.minute) >= (16, 20)
+    if len(df) and df.index[-1].normalize() == today and not closed:
+        return df.iloc[:-1]
+    return df
 
 
 def synthetic(ticker: str, lookback: int, seed: int | None = None) -> pd.DataFrame:
