@@ -59,7 +59,9 @@ def cycle(cfg, engine, broker, risk, frames: dict, upto: int | None, demo: bool,
         signals[t] = sig
         emit(log, f"[{date}] {t:<5} {fc.engine} {fc.stats['n_up']:>2}/{fc.stats['samples']} ↑ "
                    f"E[r] {fc.stats['exp_return']:+.2%} → {sig.action} {sig.target_weight:.0%} "
-                   f"conf {sig.confidence:.0%} ({time.time() - t0:.1f}s)")
+                   f"conf {sig.confidence:.0%}"
+             + (f" · desfase {fc.stats['recon_gap']:+.1%}" if fc.stats.get("recon_gap") is not None else "")
+             + f" ({time.time() - t0:.1f}s)")
         per[t] = {"forecast": fc, "signal": sig, "features": feats}
 
     orders, rlog = risk.build_orders(signals, broker.positions, broker.cash, prices, broker.last_equity()

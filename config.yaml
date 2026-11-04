@@ -8,7 +8,7 @@ benchmark: SPY                            # contra qué se compara la cartera
 
 data:
   interval: 1d          # velas diarias (con LLMs de por medio no tiene sentido intradía)
-  lookback: 400         # velas de contexto que ve Kronos (máx. 512 en Kronos-small)
+  lookback: 256         # velas de contexto que ve Kronos (máx. 512; menos = más rápido)
 
 forecast:
   model: NeoQuasar/Kronos-small
@@ -17,6 +17,7 @@ forecast:
   samples: 32           # nº de escenarios (las líneas del abanico)
   temperature: 1.0
   top_p: 0.9
+  anchor: true          # ancla los escenarios al cierre real (corrige el desfase del tokenizador)
 
 decision:
   # rules         → comité determinista, gratis, sin LLM
