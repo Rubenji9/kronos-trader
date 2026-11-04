@@ -1,0 +1,61 @@
+# ─────────────────────────────────────────────────────────────
+#  Kronos Trader — configuración
+#  Todo lo que afecta al dinero (aunque sea ficticio) vive aquí.
+# ─────────────────────────────────────────────────────────────
+
+universe: [AAPL, MSFT, NVDA, AMZN, SPY]   # acciones/ETFs que el sistema puede operar
+benchmark: SPY                            # contra qué se compara la cartera
+
+data:
+  interval: 1d          # velas diarias (con LLMs de por medio no tiene sentido intradía)
+  lookback: 400         # velas de contexto que ve Kronos (máx. 512 en Kronos-small)
+
+forecast:
+  model: NeoQuasar/Kronos-small
+  tokenizer: NeoQuasar/Kronos-Tokenizer-base
+  horizon: 10           # días hábiles hacia delante
+  samples: 32           # nº de escenarios (las líneas del abanico)
+  temperature: 1.0
+  top_p: 0.9
+
+decision:
+  # rules         → comité determinista, gratis, sin LLM
+  # claude        → un comité de analistas simulado con una llamada a Claude por ticker
+  # tradingagents → framework completo TauricResearch/TradingAgents (muchas llamadas, más caro)
+  mode: rules
+  claude_model: claude-sonnet-5-5
+  tradingagents:
+    llm_provider: anthropic
+    deep_think_llm: claude-sonnet-5-5
+    quick_think_llm: claude-haiku-5-5
+    max_debate_rounds: 1
+
+risk:
+  starting_cash: 100000       # capital ficticio inicial (USD)
+  long_only: true             # sin cortos ni apalancamiento
+  max_position_pct: 0.20      # ninguna posición > 20 % del patrimonio
+  max_gross_exposure_pct: 0.90
+  min_cash_pct: 0.10
+  stop_loss_pct: 0.08         # venta forzosa si cae un 8 % desde el precio medio
+  max_daily_loss_pct: 0.03    # si la cartera pierde > 3 % en un día, no se abren posiciones
+  max_trades_per_run: 6
+  min_confidence: 0.60        # señales por debajo se ignoran
+  min_trade_usd: 250          # evita órdenes ridículas
+  rebalance_band: 0.04        # solo reajusta si el peso cambia > 4 puntos (anti-ruido)
+  kill_switch_file: KILL      # si existe este fichero en la raíz, no se opera
+
+broker:
+  kind: paper                 # paper (libro simulado propio) | ibkr
+  slippage_bps: 5
+  commission_per_share: 0.005
+  min_commission: 1.0
+  ibkr:
+    host: 127.0.0.1
+    port: 4002                # 4002 = IB Gateway paper · 4001 = real
+    client_id: 17
+    allow_live: false         # doble llave: aunque pongas el puerto real, sin esto no envía órdenes
+
+output:
+  state_file: docs/data/state.json
+  journal_file: docs/data/journal.jsonl
+  candles_in_dashboard: 120
